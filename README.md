@@ -15,7 +15,14 @@ brew install qoomon/tab/aws-assume
 #### Go
 
 ```bash
-$ go get -u github.com/qoomon/aws-assume
+go get -u github.com/qoomon/aws-assume
+```
+
+#### Scoop
+
+```bash
+scoop bucket add qoomon https://github.com/qoomon/scoop-bucket.git
+scoop install aws-assume
 ```
 
 #### Manuel

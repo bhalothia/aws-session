@@ -46,12 +46,12 @@ If the role requires MFA, you will be asked for the token
 
 *Options*
 * `-duration` - The duration that temporary credentials will be valid for. (default 15m0s)
-* `-format` - The environment variables format. [only consider if no <command> is provided]
+* `-format` - The environment variables format. [only consider if no \<command> is provided]
   * bash 
   * fish
   * powershell
 * `-region` - The AWS default region.
-* `-token` - The MFA token to use. [only considered if assume by <role_arn>]
+* `-token` - The MFA token to use. [only considered if assume by \<role_arn>]
 
 
 `assume assume` sets following environment variables and then executes the command 
@@ -65,10 +65,10 @@ If the role requires MFA, you will be asked for the token
 
 #### Examples
 
-*Execute command with environment variables*
+##### Execute command with environment variables
 `aws-assume company-production aws ec2 describe-instances`
 
-*Print environment variables commands*
+##### Print environment variables commands
 `aws-assume company-production`
 
 ## Utils

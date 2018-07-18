@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -10,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
-
-	"github.com/aws/aws-sdk-go/aws"
+  
+	//"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -26,52 +25,67 @@ func init() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "Usage: %s <profile/role_arn> [<options>] [<command> <args...>]\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Usage: %s <profile> [<options>] [<command> <args...>]\n", os.Args[0])
 	flag.PrintDefaults()
 }
 
 func main() {
-	var err error
-
-	duration := *flag.Duration("duration",  stscreds.DefaultDuration, "The duration that temporary credentials will be valid for.")
-	defaultRegion := *flag.String("region", "", "The aws default region.")
-	mfaToken := *flag.String("token", "", "The mfa token to use. [only considered if assume by <role_arn>]")
-	format := *flag.String("format", defaultEnvFormat(), "The environment variables format. [only considered if no <command> is provided]")
+	flag_region := *flag.String("region", "", "The AWS region. Overrides region of profile definition.")
+	flag_duration := *flag.Duration("duration",  stscreds.DefaultDuration, "The duration in that temporary credentials will be valid for. (default " + stscreds.DefaultDuration.String() + ")")
+	//flag_format := *flag.String("mfa-serial", defaultEnvFormat(), "The environment variables format. [only considered if no <command> is provided]")
+	flag_format := *flag.String("format", defaultEnvFormat(), "The environment variables format. [only considered if no <command> is provided]")
 	flag.Parse()
-	argv := flag.Args()
+	flag_args:= flag.Args()
 	
-	if len(argv) < 1 {
+	if len(flag_args) < 1 {
 		flag.Usage()
-		fmt.Fprintf(os.Stderr, "\nERROR: <profile/role_arn> argument is missing\n")
+		fmt.Fprintf(os.Stderr, "\nERROR: <profile> argument is missing\n")
 		os.Exit(1)
 	}
 
-	stscreds.DefaultDuration = duration
-	indentity := argv[0]
-	command := argv[1:]
+	profile := flag_args[0]
+	command := flag_args[1:]
+	stscreds.DefaultDuration = flag_duration
 
-	var credentials *credentials.Value
-	if roleArnRegex.MatchString(indentity) {
-		credentials, err = assumeRole(indentity, mfaToken)
-	} else {
-		var profileRegion string
-		credentials, profileRegion, err = assumeProfile(indentity)
-		if defaultRegion == "" {
-			defaultRegion = profileRegion
-		}
-	}
+	sess, err:= createSession(profile)
 	exitOnError(err)
+	
+	credentials, err := sess.Config.Credentials.Get()
+	exitOnError(err)
+	
+	var defaultRegion string
+	if sess.Config.Region != nil {
+		defaultRegion = *sess.Config.Region
+	}
+	if flag_region != "" {
+		defaultRegion = flag_region
+	}	
+	
+	// svc := sts.New(sess)
+	// 
+	// duration := int64(stscreds.DefaultDuration.Seconds())
+	// serialNumber := "arn:aws:iam::170618839142:mfa/bengt.brodersen@moebel.de"
+	// tokenCode, err := stscreds.StdinTokenProvider()
+	// sessionTokenRequest := sts.GetSessionTokenInput { DurationSeconds: &duration, SerialNumber: &serialNumber, TokenCode: &tokenCode}
+	// sessionTokenResponse, err := svc.GetSessionToken( &sessionTokenRequest)
+	// exitOnError(err)
+
 
 	if len(command) > 0 {
-		err = executeWithSessionEnv(indentity, credentials, defaultRegion, command)
+		err := executeWithAwsEnv(credentials, defaultRegion, command)
+		exitOnError(err)
 	} else {
-		err = printSessionEnv(indentity, credentials, defaultRegion, format)
+		err := printAwsEnv(credentials, defaultRegion, flag_format)
+		exitOnError(err)
+		fmt.Println("")
+		fmt.Println("# Run this to configure your shell:")
+		fmt.Println("# " + evalCommand(flag_format, strings.Join(os.Args, " ")))
 	}
-	exitOnError(err)
 }
 
+// determine default environment format based on curret shell. [default sh]
 func defaultEnvFormat() string {
-	var shell = os.Getenv("SHELL")
+	shell := os.Getenv("SHELL")
 	if shell == "" {
 		if runtime.GOOS == "windows" {
 			return "powershell"
@@ -79,35 +93,17 @@ func defaultEnvFormat() string {
 	} else if strings.HasSuffix(shell, "fish") {
 		return "fish"
 	}
-	return "bash"
+	return "sh"
 }
 
 // creates temporary STS credentials for given profile in ~/.aws/config
 // see https://docs.aws.amazon.com/cli/latest/userguide/cli-roles.html
-func assumeProfile(profile string) (*credentials.Value, string, error) {
-	sess := session.Must(session.NewSessionWithOptions(session.Options{
+func createSession(profile string) (*session.Session, error) {	
+	return session.NewSessionWithOptions(session.Options{
 		Profile:                 profile,
 		SharedConfigState:       session.SharedConfigEnable,
 		AssumeRoleTokenProvider: stscreds.StdinTokenProvider,
-	}))
-	credentials, err := sess.Config.Credentials.Get()
-	var region string
-	if sess.Config.Region != nil {
-		region = *sess.Config.Region
-	}
-	
-	return &credentials, region, err
-}
-
-// creates temporary STS credentials for given role arn
-func assumeRole(roleArn, token string) (*credentials.Value, error) {
-	sess := session.Must(session.NewSession())
-	credentials, err := stscreds.NewCredentials(sess, roleArn, func(p *stscreds.AssumeRoleProvider) {
-		p.SerialNumber = aws.String(token)
-		p.TokenProvider = stscreds.StdinTokenProvider
-	}).Get()
-	
-	return &credentials, err
+	})
 }
 
 func exitOnError(err error) {
@@ -120,9 +116,8 @@ func exitOnError(err error) {
 	}
 }
 
-func executeWithSessionEnv(identity string, credentials *credentials.Value, region string, command []string) error {
-	os.Setenv("AWS_IDENTITY", identity)
-
+func executeWithAwsEnv(credentials credentials.Value, defaultRegion string, command []string) error {
+	
 	os.Setenv("AWS_ACCESS_KEY_ID", credentials.AccessKeyID)
 	os.Setenv("AWS_SECRET_ACCESS_KEY", credentials.SecretAccessKey)
 
@@ -131,92 +126,61 @@ func executeWithSessionEnv(identity string, credentials *credentials.Value, regi
 		os.Setenv("AWS_SECURITY_TOKEN", credentials.SessionToken)
 	}
 
-	if region != "" {
-		os.Setenv("AWS_DEFAULT_REGION", region)
-		os.Setenv("AWS_REGION", region)
+	if defaultRegion != "" {
+		os.Setenv("AWS_DEFAULT_REGION", defaultRegion)
+		os.Setenv("AWS_REGION", defaultRegion)
 	}
 
 	path, err := exec.LookPath(command[0])
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(path, command, os.Environ())
-}
-
-// prints the credentials in a way that can easily be sourced with bash.
-func printSessionEnv(identity string, credentials *credentials.Value, region string, format string) error {
-	switch format {
-	case "bash":
-		printSessionEnvBash(identity, credentials, region)
-	case "fish":
-		printSessionEnvFish(identity, credentials, region)
-	case "powershell":
-		printSessionEnvPowerShell(identity, credentials, region)
-	default:
-		return errors.New(fmt.Sprintf("unsuported format '%s'", format))
+	
+	err = syscall.Exec(path, command, os.Environ())
+	if err != nil {
+		return err
 	}
+	
 	return nil
 }
 
-func printSessionEnvBash(identity string, credentials *credentials.Value, region string) {
-	fmt.Printf("export AWS_IDENTITY=\"%s\"\n", identity)
+// prints the credentials in a way that can easily be sourced.
+func printAwsEnv(credentials credentials.Value, defaultRegion string, format string) error {
 
-	fmt.Printf("export AWS_ACCESS_KEY_ID=\"%s\"\n", credentials.AccessKeyID)
-	fmt.Printf("export AWS_SECRET_ACCESS_KEY=\"%s\"\n", credentials.SecretAccessKey)
+	fmt.Println(envCommand(format, "AWS_ACCESS_KEY_ID", credentials.AccessKeyID))
+	fmt.Println(envCommand(format, "AWS_SECRET_ACCESS_KEY", credentials.SecretAccessKey))
 
 	if credentials.SessionToken != "" {
-		fmt.Printf("export AWS_SESSION_TOKEN=\"%s\"\n", credentials.SessionToken)
-		fmt.Printf("export AWS_SECURITY_TOKEN=\"%s\"\n", credentials.SessionToken)
+		fmt.Println(envCommand(format, "AWS_SESSION_TOKEN", credentials.SessionToken))
+		fmt.Println(envCommand(format, "AWS_SECURITY_TOKEN", credentials.SessionToken))
 	}
 
-	if region != "" {
-		fmt.Printf("export AWS_DEFAULT_REGION=\"%s\"\n", region)
-		fmt.Printf("export AWS_REGION=\"%s\"\n", region)
+	if defaultRegion != "" {
+		fmt.Println(envCommand(format, "AWS_DEFAULT_REGION", defaultRegion))
+		fmt.Println(envCommand(format, "AWS_REGION", defaultRegion))
 	}
-
-	fmt.Printf("\n")
-	fmt.Printf("# Run this to configure your shell:\n")
-	fmt.Printf("# eval $(%s)\n", strings.Join(os.Args, " "))
+	
+	return nil
 }
 
-func printSessionEnvFish(identity string, credentials *credentials.Value, region string) {
-	fmt.Printf("set -gx AWS_IDENTITY \"%s\";\n", identity)
-
-	fmt.Printf("set -gx AWS_ACCESS_KEY_ID \"%s\";\n", credentials.AccessKeyID)
-	fmt.Printf("set -gx AWS_SECRET_ACCESS_KEY \"%s\";\n", credentials.SecretAccessKey)
-
-	if credentials.SessionToken != "" {
-		fmt.Printf("set -gx AWS_SESSION_TOKEN \"%s\";\n", credentials.SessionToken)
-		fmt.Printf("set -gx AWS_SECURITY_TOKEN \"%s\";\n", credentials.SessionToken)
+func envCommand(format string, name string, value string) string {
+	switch format {
+	case "fish":
+		return "set -gx " + name + " \"" + value + "\";"
+	case "powershell":
+		return "$env:" + name + "=\"" + value + "\";"
+	default: // sh
+		return "export " + name + "=\"" + value + "\";"
 	}
-
-	if region != "" {
-		fmt.Printf("set -gx AWS_DEFAULT_REGION \"%s\";\n", region)
-		fmt.Printf("set -gx AWS_REGION \"%s\";\n", region)
-	}
-
-	fmt.Printf("\n")
-	fmt.Printf("# Run this to configure your shell:\n")
-	fmt.Printf("# eval (%s)\n", strings.Join(os.Args, " "))
 }
 
-func printSessionEnvPowerShell(identity string, credentials *credentials.Value, region string) {
-	fmt.Printf("$env:AWS_IDENTITY=\"%s\"\n", identity)
-
-	fmt.Printf("$env:AWS_ACCESS_KEY_ID=\"%s\"\n", credentials.AccessKeyID)
-	fmt.Printf("$env:AWS_SECRET_ACCESS_KEY=\"%s\"\n", credentials.SecretAccessKey)
-
-	if credentials.SessionToken != "" {
-		fmt.Printf("$env:AWS_SESSION_TOKEN=\"%s\"\n", credentials.SessionToken)
-		fmt.Printf("$env:AWS_SECURITY_TOKEN=\"%s\"\n", credentials.SessionToken)
+func evalCommand(format string, command string) string {
+	switch format {
+	case "fish":
+		return "eval (" + command + ")"
+	case "powershell":
+		return command + " | Invoke-Expression"
+	default: // sh
+		return "eval $(" + command + ")"
 	}
-
-	if region != "" {
-		fmt.Printf("$env:AWS_DEFAULT_REGION=\"%s\"\n", region)
-		fmt.Printf("$env:AWS_REGION=\"%s\"\n", region)
-	}
-
-	fmt.Printf("\n")
-	fmt.Printf("# Run this to configure your shell:\n")
-	fmt.Printf("# %s | Invoke-Expression \n", strings.Join(os.Args, " "))
 }

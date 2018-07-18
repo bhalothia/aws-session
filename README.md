@@ -45,17 +45,15 @@ Setup profiles you would like to assume in `~/.aws/config` => [aws cli-roles](ht
 If the role requires MFA, you will be asked for the token
 
 *Options*
-* `-duration` - The duration that temporary credentials will be valid for. (default 15m0s)
-* `-format` - The environment variables format. [only consider if no \<command> is provided]
-  * bash 
+* `-region` - The AWS region. Overrides region of profile definition.
+* `-duration` - The duration temporary credentials will be valid for. (default 15m)
+* `-mfa-serial` - The ARN of the MFA device.
+* `-format` - The environment variables format. **only consider if no \<command> is provided**
+  * sh 
   * fish
   * powershell
-* `-region` - The AWS default region.
-* `-token` - The MFA token to use. [only considered if assume by \<role_arn>]
-
 
 `assume assume` sets following environment variables and then executes the command 
-* `AWS_IDENTITY` 
 * `AWS_ACCESS_KEY_ID`
 * `AWS_SECRET_ACCESS_KEY`
 * `AWS_SESSION_TOKEN`

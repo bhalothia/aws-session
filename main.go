@@ -5,19 +5,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"runtime"
 	"strings"
 	"syscall"
-  
-	//"github.com/aws/aws-sdk-go/service/sts"
+
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/credentials/stscreds"
 	"github.com/aws/aws-sdk-go/aws/session"
-)
-
-var (
-	roleArnRegex = regexp.MustCompile(`^arn:aws:iam::(.+):role/([^/]+)(/.+)?$`)
 )
 
 func init() {
@@ -32,7 +26,6 @@ func usage() {
 func main() {
 	flag_region := *flag.String("region", "", "The AWS region. Overrides region of profile definition.")
 	flag_duration := *flag.Duration("duration",  stscreds.DefaultDuration, "The duration in that temporary credentials will be valid for. (default " + stscreds.DefaultDuration.String() + ")")
-	//flag_format := *flag.String("mfa-serial", defaultEnvFormat(), "The environment variables format. [only considered if no <command> is provided]")
 	flag_format := *flag.String("format", defaultEnvFormat(), "The environment variables format. [only considered if no <command> is provided]")
 	flag.Parse()
 	flag_args:= flag.Args()
@@ -60,16 +53,6 @@ func main() {
 	if flag_region != "" {
 		defaultRegion = flag_region
 	}	
-	
-	// svc := sts.New(sess)
-	// 
-	// duration := int64(stscreds.DefaultDuration.Seconds())
-	// serialNumber := "arn:aws:iam::170618839142:mfa/bengt.brodersen@moebel.de"
-	// tokenCode, err := stscreds.StdinTokenProvider()
-	// sessionTokenRequest := sts.GetSessionTokenInput { DurationSeconds: &duration, SerialNumber: &serialNumber, TokenCode: &tokenCode}
-	// sessionTokenResponse, err := svc.GetSessionToken( &sessionTokenRequest)
-	// exitOnError(err)
-
 
 	if len(command) > 0 {
 		err := executeWithAwsEnv(credentials, defaultRegion, command)
@@ -98,11 +81,14 @@ func defaultEnvFormat() string {
 
 // creates temporary STS credentials for given profile in ~/.aws/config
 // see https://docs.aws.amazon.com/cli/latest/userguide/cli-roles.html
-func createSession(profile string) (*session.Session, error) {	
+func createSession(profile string) (*session.Session, error) {
+	os.Unsetenv("AWS_ACCESS_KEY_ID")
+	os.Unsetenv("AWS_SECRET_ACCESS_KEY")
+	
 	return session.NewSessionWithOptions(session.Options{
 		Profile:                 profile,
 		SharedConfigState:       session.SharedConfigEnable,
-		AssumeRoleTokenProvider: stscreds.StdinTokenProvider,
+		AssumeRoleTokenProvider: stscreds.StdinTokenProvider, // TODO make use of https://github.com/mattn/go-tty
 	})
 }
 
@@ -128,7 +114,6 @@ func executeWithAwsEnv(credentials credentials.Value, defaultRegion string, comm
 
 	if defaultRegion != "" {
 		os.Setenv("AWS_DEFAULT_REGION", defaultRegion)
-		os.Setenv("AWS_REGION", defaultRegion)
 	}
 
 	path, err := exec.LookPath(command[0])

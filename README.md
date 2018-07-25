@@ -47,7 +47,6 @@ If the role requires MFA, you will be asked for the token
 *Options*
 * `-region` - The AWS region. Overrides region of profile definition.
 * `-duration` - The duration temporary credentials will be valid for. (default 15m)
-* `-mfa-serial` - The ARN of the MFA device.
 * `-format` - The environment variables format. **only consider if no \<command> is provided**
   * sh 
   * fish
@@ -57,17 +56,17 @@ If the role requires MFA, you will be asked for the token
 * `AWS_ACCESS_KEY_ID`
 * `AWS_SECRET_ACCESS_KEY`
 * `AWS_SESSION_TOKEN`
-* `AWS_SECURITY_TOKEN`
 * `AWS_DEFAULT_REGION`
-* `AWS_REGION`
+* Legacy environment variables
+  * `AWS_SECURITY_TOKEN` - Former variable for `AWS_SESSION_TOKEN`
 
 #### Examples
 
-##### Execute command with environment variables
-`aws-assume company-production aws ec2 describe-instances`
-
 ##### Print environment variables commands
 `aws-assume company-production`
+
+##### Execute command with environment variables set
+`aws-assume company-production aws ec2 describe-instances`
 
 ## Utils
 If you use `eval $(aws-assume)` frequently, you may want to create a alias for it:

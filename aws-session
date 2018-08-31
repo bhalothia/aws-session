@@ -1,0 +1,210 @@
+#!/bin/bash
+
+set -e # exit on error
+
+# START USAGE DOCUMENTATION
+# aws-session is a command line tool to help create temporary credentials with support for assume roles and MFA authoriztion
+#  + MFA support
+# 
+# Create your account account profile within ~/.aws/config and ~/.aws/credentials
+#
+# Usage: aws-session [profile_name]
+#
+# END USAGE DOCUMENTATION
+
+determine_output_format() {
+  if [[ "$SHELL" = *"/fish" ]]; then 
+    echo "fish"
+  else
+    echo "sh"
+  fi 
+}
+
+echo_tty() {
+  echo "$@" > "$(tty)"
+}
+
+echo_log() {
+  echo "echo $*"
+}
+
+echo_export() {
+  local key="$1"
+  local value="$2"
+  if [ "$output_format" = "fish" ]; then
+    if [ "$value" ]; then
+      echo "set -gx $key 'value'"
+    else
+      echo "set -gx $key"
+    fi
+  else
+    if [ "$value" ]; then
+      echo "export $key='$value'"
+    else
+      echo "export $key"
+    fi
+  fi
+}
+
+echo_eval_comment() {
+  local command=$1
+  if [ "$output_format" = "fish" ]; then
+    echo "# eval ($command)"
+  else
+    echo "# eval \"\$($command)\""
+  fi
+}
+
+
+################################################################################
+# PRE-CONDITIONS
+################################################################################
+
+# requires aws
+if ! hash aws 2>/dev/null; then
+  echo_log "aws-session requires 'aws' to be installed"
+  exit 1
+fi
+
+output_format=$(determine_output_format)
+
+################################################################################
+# INPUT
+################################################################################
+                                                                                  # TODO print environemnt variables by parameter
+user_profile_recent="$AWS_SESSION_PROFILE"   
+profile_recent="$AWS_SESSION_PROFILE"                                                                       
+profile="${1:-'default'}"
+
+account_id=${AWS_SESSION_ACCOUNT_ID}
+role_arn=${AWS_SESSION_ROLE_ARN}
+
+region=""                                                                         # TODO pass by parameter
+region="${region:-$AWS_SESSION_REGION}"
+region="${region:-$AWS_DEFAULT_REGION}"
+region="${region:-$(aws configure get 'region' --profile "$profile")}"
+
+mfa_token=""                                                                      # TODO pass by parameter
+
+# user session timeouts in seconds
+user_session_timeout="" # default 12h; max 36h                                    # TODO pass by parameter
+user_session_timeout="${user_session_timeout:-$AWS_USER_SESSION_TIMEOUT}"
+user_session_timeout="${user_session_timeout:-43200}"
+
+# role session timeouts in seconds
+role_session_timeout="" # default  1h; max 12h                                    # TODO pass by parameter
+role_session_timeout="${role_session_timeout:-$AWS_ROLE_SESSION_TIMEOUT}"
+role_session_timeout="${role_session_timeout:-3600}" 
+
+now=$(date +"%s")
+
+session_expiry_user="${AWS_SESSION_EXPIRY_USER:-0}"
+session_expiry_role="${AWS_SESSION_EXPIRY_ROLE:-0}"
+session_expiry="${AWS_SESSION_EXPIRY:-0}"
+
+################################################################################
+# GET USER SESSION 
+################################################################################
+
+if [ "$now" -ge "$session_expiry_user" ] || [ "$profile" != "$profile_recent" ]; then    # TODO respect user_profile change
+  
+  source_profile="$(aws configure get 'source_profile' --profile "$profile" || true)"
+  if [ "$source_profile" ]; then 
+    role_arn="$(aws configure get 'role_arn' --profile "$profile" || true)"
+  fi
+
+  user_profile="$profile"
+  if [ "$source_profile" ]; then 
+    user_profile="$source_profile"
+  fi
+  
+  if [ "$user_profile" != "$user_profile_recent" ]; then
+    mfa_serial="$(aws configure get 'mfa_serial' --profile "$profile" || true)"
+    if [ ! "$mfa_serial" ]; then
+      mfa_serial="$(aws configure get 'mfa_serial' --profile "$source_profile" || true)"
+    fi
+
+    if [ "$mfa_serial" ] && [ ! "$mfa_token" ]; then
+      echo_tty -n "Enter MFA code for ${mfa_serial}: "
+      read -s -r mfa_token && echo_log
+    fi
+    
+    # Force use of ~/.aws/credentials file which contains aws login account
+    unset AWS_ACCESS_KEY_ID
+    unset AWS_SECRET_ACCESS_KEY
+
+    user_session_args+=(--profile "$user_profile")
+    user_session_args+=(--duration-seconds "$user_session_timeout")
+    if [ "$mfa_serial" ]; then
+      user_session_args+=(--serial-number "$mfa_serial")
+      user_session_args+=(--token-code "$mfa_token")
+    fi
+    user_session_args+=(--query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]")
+    user_session_args+=(--out "text")
+    user_session=$(aws sts get-session-token "${user_session_args[@]}" || true)
+    if [ ! "$user_session" ]; then
+      echo_log "aws sts get-session-token error"
+      exit 1
+    fi
+    session_expiry_user=$(($now + $user_session_timeout))
+
+    session_access_key_id=$(echo "$user_session" | cut -f1)
+    session_secret_access_key=$(echo "$user_session" |  cut -f2)
+    session_token=$(echo "$user_session" | cut -f3)
+    session_expiry="$session_expiry_user"
+
+    export AWS_ACCESS_KEY_ID="$session_access_key_id"
+    export AWS_SECRET_ACCESS_KEY="$session_secret_access_key"
+    export AWS_SESSION_TOKEN="$session_token"
+    
+    account_id=$(aws sts get-caller-identity --query "Account" --out text)           # TODO cache account_id in export variable
+    
+  fi
+fi
+
+################################################################################
+# GET ROLE SESSION 
+################################################################################
+if [ "${role_arn}" ]; then
+  role_session_args+=(--role-arn "$role_arn")
+  role_session_args+=(--external-id "$account_id")
+  role_session_args+=(--duration-seconds "$role_session_timeout")
+  role_session_args+=(--role-session-name "$(date +%s)")
+  role_session_args+=(--query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]")
+  role_session_args+=(--out "text")
+  role_session=$(aws sts assume-role "${role_session_args[@]}" || true)
+  if [ ! "$role_session" ]; then
+    echo_log "aws sts assume-role error"
+    exit 1
+  fi
+  session_expiry_role=$(($now + $role_session_timeout))
+
+  session_access_key_id=$(echo "$role_session" | cut -f1)
+  session_secret_access_key=$(echo "$role_session" |  cut -f2)
+  session_token=$(echo "$role_session" | cut -f3)
+  session_expiry="$session_expiry_role"
+fi
+
+
+################################################################################
+# OUTPUT
+################################################################################
+
+echo_export 'AWS_ACCESS_KEY_ID' "$session_access_key_id"
+echo_export 'AWS_SECRET_ACCESS_KEY' "$session_secret_access_key"
+echo_export 'AWS_DEFAULT_REGION' "$region"
+echo_export 'AWS_SESSION_TOKEN' "$session_token"
+
+# aws-session variables
+echo_export 'AWS_SESSION_PROFILE_USER' "$user_profile"
+echo_export 'AWS_SESSION_EXPIRY_USER' "$session_expiry_user"
+
+echo_export 'AWS_SESSION_PROFILE' "$profile"
+echo_export 'AWS_SESSION_ACCOUNT_ID' "$account_id"
+echo_export 'AWS_SESSION_ROLE_ARN' "$role_arn"
+echo_export 'AWS_SESSION_REGION' "$region"
+echo_export 'AWS_SESSION_EXPIRY' "$session_expiry"
+
+echo_eval_comment "$0"
+
+echo_log "Session will expire in $(($session_expiry - $now))s"

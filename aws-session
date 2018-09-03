@@ -10,6 +10,9 @@ set -e # exit on error
 #
 # Usage: aws-session [profile_name]
 #
+# set user session timeout by environment variable AWS_USER_SESSION_TIMEOUT  # default 12h, max 36h
+# set role session timeout by environment variable AWS_ROLE_SESSION_TIMEOUT  # default  1h, max 12h
+#
 # END USAGE DOCUMENTATION
 
 determine_output_format() {
@@ -82,7 +85,7 @@ recent_user_account_id="${_AWS_SESSION__USER_ACCOUNT_ID}"
 recent_user_mfa_serial="${_AWS_SESSION__USER_MFA_SERIAL}"
 user_session_expiry="${_AWS_SESSION__USER_SESSION_EXPIRY:-0}"
 
-recent_role_arn=${AWS_SESSION_ROLE_ARN}
+recent_role_arn=${_AWS_SESSION__ROLE_ARN}
 role_session_expiry="${_AWS_SESSION__ROLE_SESSION_EXPIRY:-0}"
                                                                            
 session_profile="${1:-'default'}"
@@ -125,13 +128,13 @@ if [ "$session_profile" != "$recent_session_profile" ]; then
       fi
     fi
   fi
-else
-  session_profile="$recent_session_profile"
-  session_region="$recent_session_region"
-  user_profile="$recent_user_profile"
-  user_mfa_serial="$recent_user_mfa_serial"
-  role_arn="$recent_role_arn"
 fi
+
+session_profile="${session_profile-$recent_session_profile}"
+session_region="${session_region-$recent_session_region}"
+user_profile="${user_profile-$recent_user_profile}"
+user_mfa_serial="${user_mfa_serial-$recent_user_mfa_serial}"
+role_arn="${role_arn-$recent_role_arn}"
 
 if [ "$now" -ge "$user_session_expiry" ] || [ ! "$role_arn" ]; then
   # Force use of ~/.aws/credentials file which contains aws login account
@@ -196,21 +199,21 @@ fi
 # OUTPUT
 ################################################################################
 
+echo_export 'AWS_PROFILE' "$session_profile"
 echo_export 'AWS_ACCESS_KEY_ID' "$AWS_ACCESS_KEY_ID"
 echo_export 'AWS_SECRET_ACCESS_KEY' "$AWS_SECRET_ACCESS_KEY"
 echo_export 'AWS_SESSION_TOKEN' "$AWS_SESSION_TOKEN"
 echo_export 'AWS_DEFAULT_REGION' "$session_region"
 
 # aws-session variables
-echo_export 'AWS_PROFILE' "$session_profile"
 echo_export '_AWS_SESSION__SESSION_EXPIRY' "$session_expiry"
 
 echo_export '_AWS_SESSION__USER_PROFILE' "$user_profile"
-echo_export '_AWS_SESSION__USER_MFA_SERIAL' "$user_mfa_token"
+echo_export '_AWS_SESSION__USER_MFA_SERIAL' "$user_mfa_serial"
 echo_export '_AWS_SESSION__USER_ACCOUNT_ID' "$user_account_id"
 echo_export '_AWS_SESSION__USER_SESSION_EXPIRY' "$user_session_expiry"
 
-echo_export 'AWS_SESSION_ROLE_ARN' "$role_arn"
+echo_export '_AWS_SESSION__ROLE_ARN' "$role_arn"
 echo_export '_AWS_SESSION__ROLE_SESSION_EXPIRY' "$role_session_expiry"
 
 

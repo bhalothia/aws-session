@@ -1,0 +1,223 @@
+#!/bin/bash
+
+set -e # exit on error
+
+# START USAGE DOCUMENTATION
+# aws-session is a command line tool to help create temporary credentials with support for assume roles and MFA authoriztion
+#  + MFA support
+# 
+# Create your account account profile within ~/.aws/config and ~/.aws/credentials
+#
+# Usage: aws-session [profile_name]
+#
+# set user session timeout by environment variable AWS_USER_SESSION_TIMEOUT  # default 12h, max 36h
+# set role session timeout by environment variable AWS_ROLE_SESSION_TIMEOUT  # default  1h, max 12h
+#
+# END USAGE DOCUMENTATION
+
+determine_output_format() {
+  if [[ "$SHELL" = *"/fish" ]]; then 
+    echo "fish"
+  else
+    echo "sh"
+  fi 
+}
+
+echo_tty() {
+  echo "$@" > "$(tty)"
+}
+
+echo_echo() {
+  echo "echo $*"
+}
+
+echo_export() {
+  local key="$1"
+  local value="$2"
+  if [ "$output_format" = "fish" ]; then
+    if [ "$value" ]; then
+      echo "set -gx $key 'value'"
+    else
+      echo "set -gx $key"
+    fi
+  else
+    if [ "$value" ]; then
+      echo "export $key='$value'"
+    else
+      echo "export $key"
+    fi
+  fi
+}
+
+echo_eval_comment() {
+  local command=$1
+  if [ "$output_format" = "fish" ]; then
+    echo "# eval ($command)"
+  else
+    echo "# eval \"\$($command)\""
+  fi
+}
+
+
+################################################################################
+# PRE-CONDITIONS
+################################################################################
+
+# requires aws
+if ! hash aws 2>/dev/null; then
+  echo_echo "aws-session requires 'aws' to be installed"
+  exit 1
+fi
+
+output_format=$(determine_output_format)
+
+################################################################################
+# INPUT
+################################################################################
+now=$(date +"%s")
+
+recent_session_profile="${AWS_SESSION_PROFILE}"
+recent_session_region="$AWS_DEFAULT_REGION"
+session_expiry="${_AWS_SESSION__SESSION_EXPIRY:-0}"
+                                                                            
+recent_user_profile="$_AWS_SESSION__USER_PROFILE"   
+recent_user_account_id="${_AWS_SESSION__USER_ACCOUNT_ID}"
+recent_user_mfa_serial="${_AWS_SESSION__USER_MFA_SERIAL}"
+user_session_expiry="${_AWS_SESSION__USER_SESSION_EXPIRY:-0}"
+
+recent_role_arn=${_AWS_SESSION__ROLE_ARN}
+role_session_expiry="${_AWS_SESSION__ROLE_SESSION_EXPIRY:-0}"
+                                                                           
+session_profile="${1:-'default'}"
+user_mfa_token="" # TODO pass user_mfa_token by parameter
+session_region="" # TODO pass region by parameter
+
+# user session timeouts in seconds
+user_session_timeout="" # default 12h; max 36h # TODO pass user_session_timeout by parameter                             
+user_session_timeout="${user_session_timeout:-$AWS_USER_SESSION_TIMEOUT}"
+user_session_timeout="${user_session_timeout:-43200}"
+
+# role session timeouts in seconds
+role_session_timeout="" # default  1h; max 12h # TODO pass role_session_timeout by parameter                               
+role_session_timeout="${role_session_timeout:-$AWS_ROLE_SESSION_TIMEOUT}"
+role_session_timeout="${role_session_timeout:-3600}" 
+
+################################################################################
+# GET USER SESSION 
+################################################################################
+if [ "$session_profile" != "$recent_session_profile" ]; then
+  session_region="${session_region:-$(aws configure get 'region' --profile "$session_profile")}"
+  session_region="${session_region:-$recent_session_region}"
+  
+  user_profile="$session_profile"
+  source_profile="$(aws configure get 'source_profile' --profile "$session_profile" || true)"
+  if [ "$source_profile" ]; then 
+    role_arn="$(aws configure get 'role_arn' --profile "$session_profile" || true)"
+    user_profile="$source_profile"
+  fi
+
+  if [ "$user_profile" != "$recent_user_profile" ]; then
+    user_session_expiry=0 # enforce new user session
+    user_mfa_serial="$(aws configure get 'mfa_serial' --profile "$session_profile" || true)"
+    if [ "$source_profile" ]; then
+      if [ ! "$user_mfa_serial" ]; then
+        user_mfa_serial="$(aws configure get 'mfa_serial' --profile "$source_profile" || true)"
+      fi
+      if [ ! "$session_region" ]; then
+        session_region="$(aws configure get 'region' --profile "$source_profile")"
+      fi
+    fi
+  fi
+fi
+
+session_profile="${session_profile-$recent_session_profile}"
+session_region="${session_region-$recent_session_region}"
+user_profile="${user_profile-$recent_user_profile}"
+user_mfa_serial="${user_mfa_serial-$recent_user_mfa_serial}"
+role_arn="${role_arn-$recent_role_arn}"
+
+if [ "$now" -ge "$user_session_expiry" ] || [ ! "$role_arn" ]; then
+  # Force use of ~/.aws/credentials file which contains aws login account
+  unset AWS_ACCESS_KEY_ID
+  unset AWS_SECRET_ACCESS_KEY
+  unset AWS_SESSION_TOKEN
+
+  user_session_args+=(--profile "$user_profile")
+  user_session_args+=(--duration-seconds "$user_session_timeout")
+  if [ "$user_mfa_serial" ]; then
+    user_session_args+=(--serial-number "$user_mfa_serial")
+    if [ ! "$user_mfa_token" ]; then
+      echo_tty -n "Enter MFA code for ${user_mfa_serial}: "
+      read -s -r user_mfa_token && echo_tty
+    fi
+    user_session_args+=(--token-code "$user_mfa_token")
+  fi
+  user_session_args+=(--query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]")
+  user_session_args+=(--out "text")
+  user_session=$(aws sts get-session-token "${user_session_args[@]}" || true)
+  if [ ! "$user_session" ]; then
+    echo_echo "aws sts get-session-token error"
+    exit 1
+  fi
+  user_session_expiry=$(($now + $user_session_timeout))
+
+  export AWS_ACCESS_KEY_ID="$(echo "$user_session" | cut -f1)"
+  export AWS_SECRET_ACCESS_KEY="$(echo "$user_session" |  cut -f2)"
+  export AWS_SESSION_TOKEN="$(echo "$user_session" | cut -f3)"
+  session_expiry="$user_session_expiry"
+  
+  user_account_id=$(aws sts get-caller-identity --query "Account" --out text)
+else
+  user_account_id="$recent_user_account_id"
+fi
+
+################################################################################
+# GET ROLE SESSION 
+################################################################################
+if [ "${role_arn}" ]; then
+  role_session_args+=(--role-arn "$role_arn")
+  role_session_args+=(--external-id "$user_account_id")
+  role_session_args+=(--duration-seconds "$role_session_timeout")
+  role_session_args+=(--role-session-name "$(date +%s)")
+  role_session_args+=(--query "Credentials.[AccessKeyId,SecretAccessKey,SessionToken]")
+  role_session_args+=(--out "text")
+  role_session=$(aws sts assume-role "${role_session_args[@]}" || true)
+  if [ ! "$role_session" ]; then
+    echo_echo "aws sts assume-role error"
+    exit 1
+  fi
+  role_session_expiry=$(($now + $role_session_timeout))
+
+  export AWS_ACCESS_KEY_ID="$(echo "$role_session" | cut -f1)"
+  export AWS_SECRET_ACCESS_KEY="$(echo "$role_session" |  cut -f2)"
+  export AWS_SESSION_TOKEN="$(echo "$role_session" | cut -f3)"
+  session_expiry="$role_session_expiry"
+fi
+
+
+################################################################################
+# OUTPUT
+################################################################################
+
+echo_export 'AWS_PROFILE' "$session_profile"
+echo_export 'AWS_ACCESS_KEY_ID' "$AWS_ACCESS_KEY_ID"
+echo_export 'AWS_SECRET_ACCESS_KEY' "$AWS_SECRET_ACCESS_KEY"
+echo_export 'AWS_SESSION_TOKEN' "$AWS_SESSION_TOKEN"
+echo_export 'AWS_DEFAULT_REGION' "$session_region"
+
+# aws-session variables
+echo_export '_AWS_SESSION__SESSION_EXPIRY' "$session_expiry"
+
+echo_export '_AWS_SESSION__USER_PROFILE' "$user_profile"
+echo_export '_AWS_SESSION__USER_MFA_SERIAL' "$user_mfa_serial"
+echo_export '_AWS_SESSION__USER_ACCOUNT_ID' "$user_account_id"
+echo_export '_AWS_SESSION__USER_SESSION_EXPIRY' "$user_session_expiry"
+
+echo_export '_AWS_SESSION__ROLE_ARN' "$role_arn"
+echo_export '_AWS_SESSION__ROLE_SESSION_EXPIRY' "$role_session_expiry"
+
+
+echo_eval_comment "$0"
+
+# TODO print more infos
+echo_echo "Session will expire in $(($session_expiry - $now))s"
